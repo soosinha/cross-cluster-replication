@@ -44,6 +44,7 @@ object ValidationUtil {
      * Validate the name against the rules that we have for index name.
      */
     fun validateName(name: String, validationException: ValidationException) {
+        // dummy line to check workflow 2
         if (name.toLowerCase(Locale.ROOT) != name)
             validationException.addValidationError("Value $name must be lowercase")
 

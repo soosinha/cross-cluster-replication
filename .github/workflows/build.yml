@@ -27,7 +27,7 @@ jobs:
           repository: 'saikaranam-amazon/OpenSearch'
           #repository: 'opensearch-project/OpenSearch'
           path: OpenSearch
-          ref: 'karanas-os-replication'
+          ref: 'karanas-os-replication-ccr'
       - name: Build OpenSearch
         working-directory: ./OpenSearch
         run: |

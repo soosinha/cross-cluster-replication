@@ -24,10 +24,10 @@ jobs:
         uses: actions/checkout@v2
         with:
           # TODO: Point to opensearch repo after the patch changes have been merged.
-          repository: 'saikaranam-amazon/OpenSearch'
+          repository: 'soosinha/OpenSearch'
           #repository: 'opensearch-project/OpenSearch'
           path: OpenSearch
-          ref: 'karanas-os-replication-ccr'
+          ref: 'ccr'
       - name: Build OpenSearch
         working-directory: ./OpenSearch
         run: |

@@ -32,6 +32,7 @@ import org.opensearch.replication.util.waitForClusterStateUpdate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.apache.logging.log4j.LogManager
 import org.opensearch.OpenSearchException
@@ -58,6 +59,8 @@ import org.opensearch.common.settings.Settings
 import org.opensearch.replication.util.stackTraceToString
 import org.opensearch.persistent.PersistentTasksCustomMetadata
 import org.opensearch.persistent.RemovePersistentTaskAction
+import org.opensearch.action.admin.cluster.node.tasks.list.ListTasksAction
+import org.opensearch.action.admin.cluster.node.tasks.list.ListTasksRequest
 import org.opensearch.threadpool.ThreadPool
 import org.opensearch.transport.TransportService
 import java.io.IOException
@@ -162,17 +165,77 @@ class TransportStopIndexReplicationAction @Inject constructor(transportService: 
         try {
             val allTasks: PersistentTasksCustomMetadata =
                 clusterService.state().metadata().custom(PersistentTasksCustomMetadata.TYPE)
-            for (singleTask in allTasks.tasks()) {
-                if (isReplicationTask(singleTask, request) && !singleTask.isAssigned){
-                    log.info("Removing task: ${singleTask.id} from cluster state")
-                    val removeRequest: RemovePersistentTaskAction.Request =
-                        RemovePersistentTaskAction.Request(singleTask.id)
-                    client.suspendExecute(RemovePersistentTaskAction.INSTANCE, removeRequest)
+            
+            val replicationTasks = allTasks.tasks().filter { isReplicationTask(it, request) }
+            
+            // Group tasks by executor node
+            val tasksByNode = replicationTasks.groupBy { 
+                if (it.isAssigned) it.assignment.executorNode else null 
+            }
+            
+            // Process unassigned tasks
+            tasksByNode[null]?.forEach { task ->
+                removeTask(task)
+            }
+            
+            // Process assigned tasks per node
+            for ((nodeId, tasks) in tasksByNode) {
+                if (nodeId != null) {
+                    val runningDescriptions = getRunningTaskDescriptions(nodeId)
+                    for (task in tasks) {
+                        if (!isTaskInRunningSet(task, runningDescriptions)) {
+                            removeTask(task)
+                        }
+                    }
                 }
             }
         } catch (e: Exception) {
-            log.info("Could not update cluster state")
+            log.error("Could not update cluster state: ${e.message}")
         }
+    }
+
+    private suspend fun removeTask(task: PersistentTasksCustomMetadata.PersistentTask<*>) {
+        log.info("Removing task: ${task.id} from cluster state")
+        try {
+            val removeRequest: RemovePersistentTaskAction.Request =
+                RemovePersistentTaskAction.Request(task.id)
+            client.suspendExecute(RemovePersistentTaskAction.INSTANCE, removeRequest)
+        } catch (e: Exception) {
+            log.error("Failed to remove task ${task.id}: ${e.message}")
+        }
+    }
+
+    private suspend fun getRunningTaskDescriptions(nodeId: String): Set<String> {
+        return try {
+            val listTasksRequest = ListTasksRequest()
+                .setActions("cluster:indices/admin/replication*", "cluster:indices/shards/replication*")
+                .setNodes(nodeId)
+                .setDetailed(true)
+            
+            val response = client.suspendExecute(ListTasksAction.INSTANCE, listTasksRequest)
+            response.tasks.mapNotNull { it.description }.toSet()
+        } catch (e: Exception) {
+            log.error("Failed to fetch running tasks from node $nodeId: ${e.message}")
+            emptySet()
+        }
+    }
+
+    private fun isTaskInRunningSet(persistentTask: PersistentTasksCustomMetadata.PersistentTask<*>, 
+                                    runningDescriptions: Set<String>): Boolean {
+        val params = persistentTask.params
+        val pattern = when (params) {
+            is org.opensearch.replication.task.index.IndexReplicationParams -> {
+                Regex("->\\s+${Regex.escape(params.followerIndexName)}\\s*$")
+            }
+            is org.opensearch.replication.task.shard.ShardReplicationParams -> {
+                val followerIndex = params.followerShardId.indexName
+                val shardId = params.followerShardId.id
+                Regex("->\\s+\\[${Regex.escape(followerIndex)}\\]\\[${shardId}\\]\\s*$")
+            }
+            else -> return true
+        }
+        
+        return runningDescriptions.any { pattern.containsMatchIn(it) }
     }
 
     // Remove index replication task metadata, format replication:index:fruit-1

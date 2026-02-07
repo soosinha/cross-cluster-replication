@@ -335,4 +335,36 @@ class StopReplicationIT: MultiClusterRestTestCase() {
             assertThat(followerClient.getShardReplicationTasks("restored-$followerIndexName")).isNotEmpty()
         }, 60, TimeUnit.SECONDS)
     }
+
+    fun `test stop replication removes all persistent tasks including assigned ones`() {
+        val followerClient = getClientForCluster(FOLLOWER)
+        val leaderClient = getClientForCluster(LEADER)
+
+        createConnectionBetweenClusters(FOLLOWER, LEADER)
+
+        val createIndexResponse = leaderClient.indices().create(CreateIndexRequest(leaderIndexName), RequestOptions.DEFAULT)
+        assertThat(createIndexResponse.isAcknowledged).isTrue()
+        
+        // Start replication to create persistent tasks
+        followerClient.startReplication(StartReplicationRequest("source", leaderIndexName, followerIndexName), waitForRestore = true)
+
+        // Wait for replication to be active with assigned tasks
+        assertBusy({
+            val clusterStateResponse = followerClient.lowLevelClient.performRequest(Request("GET", "/_cluster/state/metadata"))
+            val clusterStateString = EntityUtils.toString(clusterStateResponse.entity)
+            assertThat(clusterStateString).contains("replication:index:$followerIndexName")
+            assertThat(clusterStateString).contains("executor_node")
+        }, 30, TimeUnit.SECONDS)
+
+        // Stop replication
+        followerClient.stopReplication(followerIndexName)
+
+        // Verify all persistent tasks (including assigned ones) are removed
+        assertBusy({
+            val clusterStateResponse = followerClient.lowLevelClient.performRequest(Request("GET", "/_cluster/state/metadata"))
+            val clusterStateString = EntityUtils.toString(clusterStateResponse.entity)
+            assertThat(clusterStateString).doesNotContain("replication:index:$followerIndexName")
+            assertThat(clusterStateString).doesNotContain("replication:[$followerIndexName]")
+        }, 30, TimeUnit.SECONDS)
+    }
 }

@@ -260,7 +260,7 @@ class TransportStopIndexReplicationAction @Inject constructor(transportService: 
         val allTasks: PersistentTasksCustomMetadata? =
             clusterService.state()?.metadata()?.custom(PersistentTasksCustomMetadata.TYPE)
         allTasks?.tasks()?.forEach{
-            if (isReplicationTask(it, request) && !it.isAssigned){
+            if (isReplicationTask(it, request)){
                 return
             }
         }

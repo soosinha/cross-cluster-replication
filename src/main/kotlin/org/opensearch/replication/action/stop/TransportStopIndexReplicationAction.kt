@@ -161,12 +161,13 @@ class TransportStopIndexReplicationAction @Inject constructor(transportService: 
         }
     }
 
-    private suspend fun removeStaleReplicationTasksFromClusterState(request: StopIndexReplicationRequest) {
+    internal suspend fun removeStaleReplicationTasksFromClusterState(request: StopIndexReplicationRequest) {
         try {
             val allTasks: PersistentTasksCustomMetadata =
                 clusterService.state().metadata().custom(PersistentTasksCustomMetadata.TYPE)
             
             val replicationTasks = allTasks.tasks().filter { isReplicationTask(it, request) }
+            val indexExists = clusterService.state().routingTable.hasIndex(request.indexName)
             
             // Group tasks by executor node
             val tasksByNode = replicationTasks.groupBy { 
@@ -181,10 +182,15 @@ class TransportStopIndexReplicationAction @Inject constructor(transportService: 
             // Process assigned tasks per node
             for ((nodeId, tasks) in tasksByNode) {
                 if (nodeId != null) {
-                    val runningDescriptions = getRunningTaskDescriptions(nodeId)
-                    for (task in tasks) {
-                        if (!isTaskInRunningSet(task, runningDescriptions)) {
-                            removeTask(task)
+                    // If index doesn't exist, remove all tasks without checking if running
+                    if (!indexExists) {
+                        tasks.forEach { task -> removeTask(task) }
+                    } else {
+                        val runningDescriptions = getRunningTaskDescriptions(nodeId)
+                        for (task in tasks) {
+                            if (!isTaskInRunningSet(task, runningDescriptions)) {
+                                removeTask(task)
+                            }
                         }
                     }
                 }
